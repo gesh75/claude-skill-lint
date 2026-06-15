@@ -1,5 +1,9 @@
 # claude-skill-lint
 
+[![ci](https://github.com/gesh75/claude-skill-lint/actions/workflows/lint.yml/badge.svg)](https://github.com/gesh75/claude-skill-lint/actions/workflows/lint.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python: 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+
 A tiny, **zero-dependency** linter for [Claude Code](https://claude.com/claude-code) skills.
 Point it at your `~/.claude/skills` directory and it flags the things that quietly
 degrade a skills library: broken frontmatter, descriptions that are too long
