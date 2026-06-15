@@ -57,6 +57,54 @@ skill_lint.py [PATH] [--json] [--max-desc N] [--max-body N] [--quiet]
 Exit code is **non-zero when any ERROR-level finding exists**, so it drops
 straight into CI or a pre-commit hook.
 
+## Examples
+
+**Audit your whole skills library** (the default path):
+
+```console
+$ skill_lint.py
+  ! [WARN ] api-design: body is 417 lines (> 400); move detail to reference/*.md (progressive disclosure)  (bloated-body)
+  ! [WARN ] blueprint: description is 364 chars (> 350); it's loaded every turn — tighten it  (long-description)
+  ✗ [ERROR] token-budget-advisor: link points to a missing file: ../context-budget/SKILL.md  (dead-reference)
+
+Scanned 124 skills in /Users/me/.claude/skills
+  121 clean · 1 errors · 2 warnings · 0 info
+$ echo $?
+1
+```
+
+**Scan a specific directory, errors/warnings only:**
+
+```bash
+skill_lint.py ./my-plugin/skills --quiet
+```
+
+**Machine-readable output** (pipe to `jq`, a dashboard, or a bot):
+
+```console
+$ skill_lint.py --json | jq '.summary'
+{
+  "errors": 1,
+  "warnings": 2,
+  "info": 0
+}
+```
+
+**Tighten the budgets** — fail on descriptions over 250 chars or bodies over 300 lines:
+
+```bash
+skill_lint.py --max-desc 250 --max-body 300
+```
+
+**As a pre-commit hook** (`.git/hooks/pre-commit`):
+
+```bash
+#!/usr/bin/env bash
+python3 skill_lint.py "$HOME/.claude/skills" --quiet || {
+  echo "skill-lint found errors — commit aborted."; exit 1;
+}
+```
+
 ## What counts as a skill
 
 Exactly two shapes — nothing else:
