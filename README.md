@@ -33,7 +33,24 @@ names that match, no dead links) that keep a library trustworthy.
 
 ## Install
 
-No dependencies beyond Python 3.8+. Just grab the script:
+No dependencies beyond Python 3.8+.
+
+### Option 1 — install script
+
+Installs a `skill-lint` command to `~/.local/bin` (review the script first, as you should with any installer):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gesh75/claude-skill-lint/main/install.sh -o install.sh
+bash install.sh          # then run:  skill-lint ~/.claude/skills
+```
+
+Customize with env vars — `VERSION=v0.1.0` pins a release, `BIN_DIR=/usr/local/bin` changes the location:
+
+```bash
+VERSION=v0.1.0 BIN_DIR=/usr/local/bin bash install.sh
+```
+
+### Option 2 — single file
 
 ```bash
 curl -O https://raw.githubusercontent.com/gesh75/claude-skill-lint/main/skill_lint.py
