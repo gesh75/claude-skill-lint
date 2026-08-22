@@ -25,6 +25,18 @@ inputs:
     description: Write SARIF 2.1.0 to this path (empty to skip)
     required: false
     default: ""
+  min-score:
+    description: Fail if any skill scores below this (0-100, empty to skip)
+    required: false
+    default: ""
+  ignore:
+    description: Comma-separated finding codes to skip
+    required: false
+    default: ""
+  exclude:
+    description: Glob of skill paths to skip
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -39,6 +51,9 @@ runs:
         SKILL_LINT_QUIET: ${{ inputs.quiet }}
         SKILL_LINT_FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
         SKILL_LINT_SARIF: ${{ inputs.sarif }}
+        SKILL_LINT_MIN_SCORE: ${{ inputs.min-score }}
+        SKILL_LINT_IGNORE: ${{ inputs.ignore }}
+        SKILL_LINT_EXCLUDE: ${{ inputs.exclude }}
       run: |
         set -euo pipefail
         args=(--profile "$SKILL_LINT_PROFILE")
@@ -50,5 +65,14 @@ runs:
         fi
         if [ -n "$SKILL_LINT_SARIF" ]; then
           args+=(--sarif "$SKILL_LINT_SARIF")
+        fi
+        if [ -n "$SKILL_LINT_MIN_SCORE" ]; then
+          args+=(--min-score "$SKILL_LINT_MIN_SCORE")
+        fi
+        if [ -n "$SKILL_LINT_IGNORE" ]; then
+          args+=(--ignore "$SKILL_LINT_IGNORE")
+        fi
+        if [ -n "$SKILL_LINT_EXCLUDE" ]; then
+          args+=(--exclude "$SKILL_LINT_EXCLUDE")
         fi
         python3 "${GITHUB_ACTION_PATH}/skill_lint.py" "$SKILL_LINT_PATH" "${args[@]}"

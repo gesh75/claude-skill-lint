@@ -28,11 +28,12 @@ A Claude Code skill has two cost surfaces:
 - its **body** is loaded only when the skill fires — so large bodies should push
   detail into `references/*.md` (progressive disclosure) instead of sitting inline.
 
-v0.3 also encodes the agentskills.io hard limits (name format, 1024-char
-description, 500-char compatibility), Claude.ai rejection rules (reserved words,
-angle brackets), safety checks (secrets, `curl | bash`, path escape,
-prompt-injection phrasing), and Claude Code field types (`context: fork`,
-booleans, hooks). The original nine-rule engine never ran any of these.
+v0.4 also encodes the authoring guides (Anthropic, Codex 60-char frontload,
+Antigravity do-not-use + Safety heading), Claude Code 2026 fields
+(`when_to_use` listing cap at 1536, `argument-hint`, reserved slash commands),
+and a second safety pass (TLS verification off, reverse shells, unpinned
+installs, bundled `.env` / `id_rsa`). The original nine-rule engine never ran
+any of these.
 
 ## Install
 
@@ -60,12 +61,13 @@ chmod +x skill_lint.py
 skill_lint.py [PATH] [--json] [--sarif FILE] [--max-desc N] [--max-body N]
               [--quiet] [--profile claude-code|spec|claude-ai]
               [--allow-model ID] [--fail-on-warn] [--fix] [--version]
+              [--stdin] [--min-score N] [--ignore CODE] [--exclude GLOB]
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `PATH` | `~/.claude/skills` | directory to scan |
-| `--json` | off | machine-readable output (includes `line`) |
+| `PATH` | `~/.claude/skills` | directory to scan (label, when used with `--stdin`) |
+| `--json` | off | machine-readable output (`line`, `score`, per-skill `scores`) |
 | `--sarif FILE` | off | write SARIF 2.1.0 (GitHub code scanning) |
 | `--max-desc` | `350` | max description length (chars) before a warning |
 | `--max-body` | `400` | max body length (lines) before a warning |
@@ -74,10 +76,23 @@ skill_lint.py [PATH] [--json] [--sarif FILE] [--max-desc N] [--max-body N]
 | `--allow-model` | none | do not flag this model id as stale (repeatable) |
 | `--fail-on-warn` | off | exit 1 on warnings as well as errors |
 | `--fix` | off | apply safe auto-fixes in place (BOM, LF, name, trigger language, model ids) |
-| `--version` | | print `claude-skill-lint 0.3.0` |
+| `--stdin` | off | lint SKILL.md text from stdin |
+| `--min-score` | none | exit 1 if any skill scores below N (0–100; errors 16, warns 6, infos 1) |
+| `--ignore CODE` | none | skip these finding codes (comma-separated or repeatable) |
+| `--exclude GLOB` | none | skip skill paths matching this glob (repeatable) |
+| `--version` | | print `claude-skill-lint 0.4.0` |
 
 Exit code is **non-zero when any ERROR-level finding exists**, so it drops
 straight into CI or a pre-commit hook. `--fail-on-warn` also fails on warnings.
+`--min-score 80` fails the job if the worst skill scores below 80. Running
+inside GitHub Actions emits `::error` / `::warning` / `::notice` annotations
+on stderr automatically.
+
+Pipe a single file:
+
+```bash
+skill_lint.py pdf-extract/SKILL.md --stdin < SKILL.md --min-score 90
+```
 
 ## What counts as a skill
 
@@ -132,8 +147,60 @@ material and are deliberately **not** linted as skills.
 | `license-missing` | WARN | `license` points at a file that is not in the skill | v0.3 |
 | `no-heading` / `h1-mismatch` | INFO | body has no heading, or H1 does not match `name` | v0.3 |
 | `crlf-newlines` | INFO | Windows `CRLF` line endings | v0.3 |
+| `typo-field` | WARN | unknown key within edit-distance 2 of a real field (`descrption`) | v0.4 |
+| `desc-no-verb` | INFO | description does not open with an action verb | v0.4 |
+| `first-person-desc` | INFO | description uses I/we/you instead of third person | v0.4 |
+| `frontloaded-triggers` | INFO | first 60 characters have no concrete keywords (Codex) | v0.4 |
+| `no-boundary` | INFO | no `do not use` / `not for` clause (Antigravity) | v0.4 |
+| `desc-truncation` | WARN | `use when` sits after character 250 | v0.4 |
+| `desc-this-skill` | INFO | description starts with `This skill` | v0.4 |
+| `always-trigger` | WARN | description says to always fire | v0.4 |
+| `listing-truncation` | WARN | `description` + `when_to_use` over Claude Code's 1536-char listing cap | v0.4 |
+| `broad-scope` | INFO | `and` appears 3+ times in the description | v0.4 |
+| `generic-name` | WARN | name is `helper` / `utils` / `tools` / `misc` | v0.4 |
+| `reserved-command` | WARN | name collides with a Claude Code builtin (`compact`, `help`, …) | v0.4 |
+| `explainer-bloat` | INFO | body defines common knowledge (`JSON stands for`) | v0.4 |
+| `or-chain` | INFO | long A or B or C or D optionality | v0.4 |
+| `no-numbered-steps` | INFO | no numbered procedure or checklist | v0.4 |
+| `no-code-example` | INFO | no language-tagged fence | v0.4 |
+| `no-anti-pattern` | INFO | body never says what not to do | v0.4 |
+| `no-validate-loop` | INFO | no verify / confirm / assert step | v0.4 |
+| `time-sensitive` | WARN | `as of 2024` / `new in v3` will rot | v0.4 |
+| `no-disclosure` | INFO | body over 200 lines with no `references/` | v0.4 |
+| `missing-arg-hint` | INFO | `$ARGUMENTS` used without `argument-hint` | v0.4 |
+| `unquoted-colon` | WARN | unquoted YAML value contains `:` | v0.4 |
+| `tabs-in-yaml` | INFO | tabs in frontmatter | v0.4 |
+| `missing-newline` | INFO | no trailing newline | v0.4 |
+| `long-line` | INFO | a line over 240 characters | v0.4 |
+| `multiple-h1` | INFO | more than one `#` heading | v0.4 |
+| `script-no-shebang` | INFO | bundled `.py`/`.sh` has no `#!` | v0.4 |
+| `script-interactive` | WARN | `input()` / `read -p` in a bundled script | v0.4 |
+| `junk-file` | WARN | `.DS_Store` / `__MACOSX` / `Thumbs.db` | v0.4 |
+| `unexpected-root` | INFO | top-level file outside spec layout | v0.4 |
+| `nested-skill` | WARN | a supporting folder contains another `SKILL.md` | v0.4 |
+| `hardcoded-home` | WARN | `/Users`, `/home`, `~/Desktop` | v0.4 |
+| `localhost-url` | INFO | hard-coded `localhost:port` | v0.4 |
+| `large-file` / `binary-file` | WARN | extra file over ~400 KiB, or contains a NUL | v0.4 |
+| `empty-fence` | INFO | fenced block with nothing inside | v0.4 |
+| `unscoped-bash` | WARN | `allowed-tools` grants bare `Bash` | v0.4 |
+| `wildcard-tool` | WARN | `allowed-tools` contains `(*)` | v0.4 |
+| `sudo-command` | WARN | `sudo rm` / `dd` / `mkfs` | v0.4 |
+| `force-push` | WARN | `git push --force` | v0.4 |
+| `disk-wipe` | ERROR | `mkfs`, `dd if=/dev/zero`, `rm -rf ~` | v0.4 |
+| `env-dump` | WARN | `printenv` / `cat .env` | v0.4 |
+| `insecure-tls` | WARN | `curl -k`, `verify=False`, `NODE_TLS_REJECT_UNAUTHORIZED=0` | v0.4 |
+| `reverse-shell` | ERROR | `nc -e`, `/dev/tcp`, `pty.spawn` | v0.4 |
+| `unpinned-install` | INFO | `pip install pkg` / `docker pull :latest` with no pin | v0.4 |
+| `bundled-secret-file` | WARN | `.env`, `id_rsa`, `credentials.json`, `*.pem` in the skill | v0.4 |
+| `dead-skill` | WARN | `user-invocable: false` AND `disable-model-invocation: true` | v0.4 |
+| `fork-no-agent` | INFO | `context: fork` with no `agent:` | v0.4 |
+| `placeholder-text` | INFO | `YOUR_API_KEY`, `lorem ipsum`, `replace-me` | v0.4 |
+| `no-safety-section` | INFO | `scripts/` present but no Safety/Caution heading | v0.4 |
 
 \* `name-mismatch` is a warning on `--profile claude-code` and an error on `spec` / `claude-ai`.
+
+v0.4 also scans GitLab PATs (`glpat-`), JWTs, SendGrid keys, and Discord webhooks
+as `secret-leak`.
 
 Current model ids — Opus 4.8 (`claude-opus-4-8`), Sonnet 4.6 (`claude-sonnet-4-6`),
 Haiku 4.5 (`claude-haiku-4-5`) — are not flagged. Override leftovers with

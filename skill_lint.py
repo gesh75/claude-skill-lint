@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""claude-skill-lint v0.3 — audit a Claude Code / Agent Skills directory.
+"""claude-skill-lint v0.4 — audit a Claude Code / Agent Skills directory.
 
 Zero-dependency linter for ~/.claude/skills (or any directory of skills).
 
@@ -11,6 +11,7 @@ Usage:
     skill_lint.py [PATH] [--json] [--sarif FILE] [--max-desc N] [--max-body N]
                   [--quiet] [--profile claude-code|spec|claude-ai]
                   [--allow-model ID] [--fail-on-warn] [--fix] [--version]
+                  [--stdin] [--min-score N] [--ignore CODE] [--exclude GLOB]
 
 Exit code is non-zero if any ERROR-level findings exist (or WARN when
 ``--fail-on-warn`` is set).
@@ -18,12 +19,15 @@ Exit code is non-zero if any ERROR-level findings exist (or WARN when
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 DEFAULT_MAX_DESC = 350
 DEFAULT_MAX_BODY = 400
@@ -84,6 +88,10 @@ SECRET_RES = [
     (re.compile(r"sk_live_[A-Za-z0-9]{16,}"), "Stripe live key"),
     (re.compile(r"hf_[A-Za-z0-9]{20,}"), "Hugging Face token"),
     (re.compile(r"AIza[0-9A-Za-z_-]{20,}"), "Google API key"),
+    (re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "GitLab PAT"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{10,}\."), "JWT"),
+    (re.compile(r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"), "SendGrid key"),
+    (re.compile(r"discord(?:app)?\.com/api/webhooks/\d+/[\w-]+"), "Discord webhook"),
 ]
 DANGEROUS_RES = [
     (re.compile(r"curl[^\n]*\|\s*(?:sudo\s+)?(?:ba)?sh", re.I), "curl piped to a shell"),
@@ -190,6 +198,7 @@ def parse_frontmatter(text: str) -> tuple[dict | None, int, dict[str, int], str 
             break
     if end is None:
         return None, len(lines), {}, "unclosed YAML frontmatter — missing closing ---", bom, extras
+    extras["raw"] = "\n".join(lines[1:end])
 
     fm: dict = {}
     field_lines: dict[str, int] = {}
@@ -255,6 +264,303 @@ def expected_name(path: str) -> str:
         return norm.rsplit("/", 2)[-2]
     base = norm.rsplit("/", 1)[-1]
     return base[:-3] if base.lower().endswith(".md") else base
+
+
+
+VERBS = {
+    "extracts", "extract", "analyzes", "analyze", "generates", "generate", "converts", "convert",
+    "lints", "lint", "validates", "validate", "deploys", "deploy", "reviews", "review",
+    "formats", "format", "parses", "parse", "builds", "build", "writes", "write",
+    "creates", "create", "updates", "update", "fetches", "fetch", "installs", "install",
+    "tests", "test", "audits", "audit", "scans", "scan", "transforms", "transform",
+    "renders", "render", "compiles", "compile", "packages", "package", "publishes", "publish",
+    "migrates", "migrate", "documents", "document", "designs", "design", "debugs", "debug",
+    "traces", "trace", "monitors", "monitor", "configures", "configure", "fills", "fill",
+    "merges", "merge", "splits", "split", "compares", "compare", "summarizes", "summarize",
+    "translates", "translate", "searches", "search", "indexes", "index", "queries", "query",
+    "uploads", "upload", "downloads", "download", "archives", "archive", "restores", "restore",
+    "patches", "patch", "refactors", "refactor", "authenticates", "encrypts", "signs", "sign",
+    "processes", "process", "handles", "handle", "guides", "guide", "orchestrates", "orchestrate",
+    "detects", "detect", "repairs", "repair", "normalizes", "normalize", "redacts", "redact",
+}
+GENERIC_NAMES = {
+    "helper", "utils", "util", "tools", "misc", "skill", "test", "tmp", "foo", "bar",
+    "demo", "sample", "example", "temp", "new", "old", "stuff", "thing", "default",
+}
+STOP = {
+    "this", "that", "with", "from", "when", "skill", "helps", "using", "based", "into",
+    "your", "their", "them", "then", "than", "also", "just", "very", "more", "some",
+    "about", "after", "before", "under", "over", "does", "doing", "make", "made",
+}
+JUNK = {".ds_store", "thumbs.db", "desktop.ini", "__macosx"}
+RESERVED_COMMANDS = {
+    "help", "clear", "compact", "login", "logout", "doctor", "init", "diff",
+    "review", "memory", "status", "vim", "hooks", "install", "plugin", "resume",
+    "config", "permissions", "mcp", "export", "rewind", "skills", "agents",
+    "model", "theme", "cost", "usage", "upgrade", "feedback", "bug", "exit", "quit",
+}
+SECRET_FILE_RE = re.compile(
+    r"(^|/)(\.env|\.env\.[^/]+|id_rsa|id_ed25519|credentials\.json|serviceAccount\.json|.*\.(pem|p12|key))$",
+    re.I,
+)
+WEIGHT = {ERROR: 16, WARN: 6, INFO: 1}
+
+
+def levenshtein(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > 2:
+        return 99
+    m, n = len(a), len(b)
+    dp = list(range(m + 1))
+    for j in range(1, n + 1):
+        prev = dp[0]
+        dp[0] = j
+        for i in range(1, m + 1):
+            tmp = dp[i]
+            dp[i] = prev if a[i - 1] == b[j - 1] else 1 + min(prev, dp[i], dp[i - 1])
+            prev = tmp
+    return dp[m]
+
+
+def closest_key(key: str, known: list[str]) -> str | None:
+    k = key.lower()
+    best = None
+    dist = 3
+    for cand in known:
+        d = levenshtein(k, cand.lower())
+        if 0 < d < dist:
+            dist = d
+            best = cand
+    return best
+
+
+def score_of(findings: list[Finding]) -> int:
+    penalty = sum(WEIGHT.get(f.level, 1) for f in findings)
+    return max(0, min(100, 100 - penalty))
+
+
+def _iter_extra(skill_path: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    base = os.path.dirname(skill_path)
+    if not os.path.isdir(base):
+        return out
+    # Top-level <name>.md skills have no supporting tree. Walking the parent
+    # would flag sibling skills as unexpected-root.
+    if os.path.basename(skill_path).lower() != "skill.md":
+        return out
+    skill_rel = _norm(os.path.relpath(skill_path, base))
+    for rel in sorted(collect_files(skill_path)):
+        if rel == skill_rel or os.path.basename(rel).lower() == "skill.md":
+            continue
+        full = os.path.join(base, rel.replace("/", os.sep))
+        try:
+            with open(full, "rb") as fh:
+                blob = fh.read(400_001)
+            text = blob.decode("utf-8", "replace")
+        except OSError:
+            text = ""
+        out.append((rel, text))
+    return out
+
+
+def lint_v04(
+    label: str,
+    source: str,
+    raw_fm: str,
+    body: str,
+    desc: str,
+    name: str,
+    fm: dict,
+    extra: list[tuple[str, str]],
+    field_lines: dict[str, int],
+    body_start_line: int,
+) -> list[Finding]:
+    out: list[Finding] = []
+    desc_line = field_lines.get("description", 2)
+
+    def add(level: str, code: str, message: str, line: int | None = None) -> None:
+        out.append(Finding(label, level, code, message, line))
+
+    if desc:
+        fw = re.sub(r"[^a-z]", "", (desc.strip().split() or [""])[0].lower())
+        verbish = fw in VERBS or fw.endswith("ing")
+        if not verbish:
+            add(INFO, "desc-no-verb",
+                "description does not open with an action verb (Extracts, Lints, Generates…)", desc_line)
+        if re.search(
+            r"\b(i['’]m|i['’]ve|i\s|we['’]ll|\bwe\b|\byou['’]re|\byou['’]ll|\byour\b|\byou\b)",
+            desc, re.I,
+        ):
+            add(INFO, "first-person-desc",
+                "description uses first/second person — Anthropic wants third person ('the user')", desc_line)
+        if len(desc) >= 40:
+            head = re.sub(r"[^a-z0-9\s-]", " ", desc[:60].lower())
+            keywords = [w for w in head.split() if len(w) >= 4 and w not in STOP]
+            if len(keywords) < 2:
+                add(INFO, "frontloaded-triggers",
+                    "first 60 characters of the description have no concrete trigger keywords", desc_line)
+        if not re.search(r"\b(do not use|don't use|not for|never use|avoid using)\b", desc, re.I):
+            add(INFO, "no-boundary",
+                "description has no 'do not use' / 'not for' boundary", desc_line)
+        if len(desc) > 250:
+            after, before = desc[250:], desc[:250]
+            if re.search(r"\b(use when|when the user)\b", after, re.I) and not re.search(
+                r"\b(use when|when the user)\b", before, re.I
+            ):
+                add(WARN, "desc-truncation",
+                    "trigger language sits after char 250 — Claude's skill list truncates there", desc_line)
+        ands = re.findall(r"\band\b", desc, re.I)
+        if len(ands) >= 3:
+            add(INFO, "broad-scope",
+                f"description uses 'and' {len(ands)} times — split into micro-skills", desc_line)
+        if re.match(r"this\s+skill\b", desc.strip(), re.I):
+            add(INFO, "desc-this-skill",
+                "description starts with 'This skill' — that burns the 60-char Codex frontload", desc_line)
+        if re.search(r"\balways\s+(?:use|consider|invoke|apply|run|load)\b|\buse for every\b", desc, re.I):
+            add(WARN, "always-trigger",
+                "description says to always fire — that is a context tax on every turn", desc_line)
+
+    if name and name in GENERIC_NAMES:
+        add(WARN, "generic-name",
+            f"name '{name}' is too generic to route on — pick the job, not 'helper'",
+            field_lines.get("name", 2))
+    if name and name in RESERVED_COMMANDS:
+        add(WARN, "reserved-command",
+            f"name '{name}' collides with a Claude Code builtin slash command",
+            field_lines.get("name", 2))
+
+    when = _as_str(fm.get("when_to_use", "") or "")
+    if desc and (len(desc) + len(when) > 1536):
+        add(WARN, "listing-truncation",
+            f"description + when_to_use is {len(desc) + len(when)} chars — Claude Code lists truncate at 1536",
+            desc_line)
+
+    if body.strip():
+        if re.search(r"\b(is a (file|format|protocol|language|standard|library)|stands for)\b", body, re.I):
+            add(INFO, "explainer-bloat",
+                "body defines common knowledge the model already has — cut the textbook paragraph")
+        if re.search(r"\b(?:\w+\s+or\s+){3,}\w+", body, re.I):
+            add(INFO, "or-chain", "long A or B or C or D chain — pick a default, mention alternatives once")
+        if not re.search(r"^\s*\d+\.\s+\S", body, re.M) and not re.search(r"^\s*[-*]\s+\[[ xX]\]", body, re.M):
+            add(INFO, "no-numbered-steps",
+                "body has no numbered procedure or checklist", body_start_line)
+        if not re.search(r"```[a-zA-Z]", body):
+            add(INFO, "no-code-example",
+                "no fenced, language-tagged example", body_start_line)
+        if not re.search(r"\b(do not|don't|never |avoid |must not)\b", body, re.I):
+            add(INFO, "no-anti-pattern", "body never says what not to do", body_start_line)
+        if not re.search(r"\b(verif(?:y|ies|ication)|validat(?:e|es|ion)|confirm|re-?run|assert|check that)\b", body, re.I):
+            add(INFO, "no-validate-loop",
+                "no verify/validate/confirm step — Anthropic's loop is plan → execute → check",
+                body_start_line)
+        blob = body + "\n" + (desc or "")
+        if re.search(r"\b(as of 202[0-6]|in 202[0-5]|since 202[0-5]|new in v?\d|currently \(202)", blob, re.I):
+            add(WARN, "time-sensitive", "date-anchored claim will rot — move history to an 'old patterns' section")
+        h1s = re.findall(r"^# ", body, re.M)
+        if len(h1s) > 1:
+            add(INFO, "multiple-h1", f"body has {len(h1s)} H1 headings — keep one title, nest the rest", body_start_line)
+        if re.search(r"```[a-zA-Z0-9]*[ \t]*\n[ \t]*```", body):
+            add(INFO, "empty-fence", "empty fenced code block")
+        if (not re.search(r"^#{1,3}\s+(safety|caution|warning|security)\b", body, re.I | re.M)
+                and any(re.search(r"(^|/)scripts/", rel.replace('\\', '/')) for rel, _c in extra)):
+            add(INFO, "no-safety-section", "scripts/ present but no Safety/Caution heading", body_start_line)
+        if body.count("\n") + 1 > 200 and not any(
+            re.search(r"(^|/)references/", rel.replace("\\", "/")) for rel, _c in extra
+        ):
+            add(INFO, "no-disclosure",
+                "body is over 200 lines with no references/ — split for progressive disclosure",
+                body_start_line)
+        if re.search(r"\$ARGUMENTS\b|\$\{ARGUMENTS\}|\$[0-9]\b", body) and not _as_str(fm.get("argument-hint", "") or "").strip():
+            add(INFO, "missing-arg-hint",
+                "body uses $ARGUMENTS / $N but frontmatter has no argument-hint for autocomplete",
+                field_lines.get("argument-hint", body_start_line))
+
+    for line in raw_fm.split("\n"):
+        if line.startswith("\t"):
+            add(INFO, "tabs-in-yaml", "frontmatter uses tabs — YAML is space-indented")
+            break
+        if re.match(r'^[A-Za-z0-9_-]+:\s+[^"\'>\n|][^:\n]*:[^:\n]', line) and "://" not in line:
+            add(WARN, "unquoted-colon", "unquoted YAML value contains a colon — wrap the value in quotes")
+
+    if source and not source.endswith("\n"):
+        add(INFO, "missing-newline", "file has no trailing newline")
+    lines = source.splitlines()
+    for i, line in enumerate(lines):
+        if len(line) > 240:
+            add(INFO, "long-line", f"line {i + 1} is {len(line)} chars — wrap it", i + 1)
+            break
+
+    tools = _as_str(fm.get("allowed-tools", "") or "")
+    if tools:
+        if re.search(r"(?:^|\s)Bash(?:\s|$)", tools) and not re.search(r"(?:^|\s)Bash\(", tools):
+            add(WARN, "unscoped-bash",
+                "allowed-tools grants unscoped Bash — prefer Bash(git:*) style least privilege",
+                field_lines.get("allowed-tools"))
+        if re.search(r"\(\s*\*\s*\)", tools):
+            add(WARN, "wildcard-tool",
+                "allowed-tools contains a * wildcard that grants everything",
+                field_lines.get("allowed-tools"))
+
+    if fm.get("disable-model-invocation") is True and fm.get("user-invocable") is False:
+        add(WARN, "dead-skill",
+            "user-invocable: false and disable-model-invocation: true — nothing can fire this skill",
+            field_lines.get("user-invocable") or field_lines.get("disable-model-invocation"))
+    if _as_str(fm.get("context", "") or "").strip() == "fork" and not fm.get("agent"):
+        add(INFO, "fork-no-agent",
+            "context: fork with no agent: — defaults to general-purpose; set it explicitly",
+            field_lines.get("context"))
+
+    if re.search(r"\bsudo\s+(rm|dd|chmod|mkfs|kill|reboot|shutdown)\b", source, re.I):
+        add(WARN, "sudo-command", "skill instructs sudo on a destructive command")
+    if re.search(r"git\s+push\s+[^\n]*(-f\b|--force)", source):
+        add(WARN, "force-push", "skill instructs git push --force")
+    if re.search(r"\b(mkfs\.\w+|dd\s+if=/dev/(?:zero|urandom)|rm\s+-rf\s+~(?:\s|$|/))", source, re.I):
+        add(ERROR, "disk-wipe", "skill instructs a disk-wipe / home-delete command")
+    if re.search(r"\b(printenv|cat\s+\.env\b|env\s*\|\s*grep)\b", source):
+        add(WARN, "env-dump", "skill dumps environment / .env — secrets leak into the transcript")
+    if re.search(r"\b(lorem ipsum|YOUR_[A-Z][A-Z0-9_]+|replace-me|changeme|INSERT_\w+)\b", source, re.I):
+        add(INFO, "placeholder-text", "placeholder copy (YOUR_*, lorem ipsum, replace-me) left in the skill")
+    if re.search(r"\b(localhost|127\.0\.0\.1):\d+", source):
+        add(INFO, "localhost-url", "hard-coded localhost URL will not work for anyone else")
+    if re.search(r"/Users/|/home/[a-z]|C:\\\\Users\\|~/(Desktop|Documents|Downloads)", source, re.I):
+        add(WARN, "hardcoded-home", "absolute home-directory path — use a relative path or an env var")
+    if re.search(
+        r"(?:curl|wget)[^\n]*\s(?:-k|--insecure)\b|verify\s*=\s*False|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY",
+        source, re.I,
+    ):
+        add(WARN, "insecure-tls", "skill disables TLS verification (curl -k, verify=False, NODE_TLS_REJECT_UNAUTHORIZED)")
+    if re.search(r"\bnc\s+-[a-zA-Z]*e\b|/dev/tcp/|pty\.spawn|bash\s+-i\s+>&", source, re.I):
+        add(ERROR, "reverse-shell", "skill instructs a reverse shell (nc -e, /dev/tcp, pty.spawn)")
+    for line in source.splitlines():
+        if re.search(r"\bpip3?\s+install\b", line) and "==" not in line and " -r " not in line and "--requirement" not in line and " -e " not in line:
+            add(INFO, "unpinned-install", "unpinned pip/npm/docker install — pin a version so the skill is reproducible")
+            break
+        if re.search(r"\bnpm\s+i(?:nstall)?\s+(-g|--global)\b", line) or re.search(r"\bdocker\s+pull\s+\S+:latest\b", line):
+            add(INFO, "unpinned-install", "unpinned pip/npm/docker install — pin a version so the skill is reproducible")
+            break
+
+    for rel, content in extra:
+        pth = rel.replace("\\", "/")
+        base = pth.split("/")[-1]
+        if base.lower() in JUNK or "__MACOSX" in pth:
+            add(WARN, "junk-file", f"packaging junk in the skill: {pth}")
+        if re.search(r"/SKILL\.md$", pth, re.I):
+            add(WARN, "nested-skill", f"nested SKILL.md at {pth} — a skill inside a skill will be double-scanned")
+        if "/" not in pth and not re.match(r"^(skill\.md|license.*|readme.*|changelog.*|copying|notice|gitignore)$", base, re.I):
+            add(INFO, "unexpected-root",
+                f"unexpected top-level file '{base}' — spec layout is SKILL.md + scripts/ + references/ + assets/")
+        if SECRET_FILE_RE.search(pth) or "/.git/" in pth:
+            add(WARN, "bundled-secret-file", f"{pth} looks like a secret file bundled into the skill")
+        if len(content) > 400_000:
+            add(WARN, "large-file", f"{pth} is {len(content) // 1024} KiB — agents will not load this on demand cleanly")
+        if "\0" in content:
+            add(WARN, "binary-file", f"{pth} looks binary — keep binaries in assets/ and mention them, or drop them")
+        if re.search(r"\.(py|sh|bash|rb)$", base, re.I) and content.strip() and not content.startswith("#!"):
+            add(INFO, "script-no-shebang", f"{pth} has no shebang — agents exec it as a script")
+        if re.search(r"\b(input\s*\(|raw_input\s*\(|read\s+-p\s)", content):
+            add(WARN, "script-interactive", f"{pth} prompts interactively — agents run non-interactive shells")
+    return out
 
 
 def _line_of(text: str, idx: int) -> int:
@@ -410,9 +716,15 @@ def lint_skill(
                                         f"frontmatter field '{key}' is not in the Agent Skills spec",
                                         field_lines.get(key)))
         else:
+            hint = closest_key(key, list(SPEC_FIELDS | CC_FIELDS))
             level = WARN if profile == "claude-code" else ERROR
-            findings.append(Finding(label, level, "unknown-field",
-                                    f"unknown frontmatter field '{key}'", field_lines.get(key)))
+            if hint:
+                findings.append(Finding(label, level, "typo-field",
+                                        f"unknown frontmatter field '{key}' — did you mean '{hint}'?",
+                                        field_lines.get(key)))
+            else:
+                findings.append(Finding(label, level, "unknown-field",
+                                        f"unknown frontmatter field '{key}'", field_lines.get(key)))
 
     for key in CC_BOOL_FIELDS:
         if key not in fm:
@@ -566,6 +878,11 @@ def lint_skill(
                                     f"name '{name}' is declared by {n} skills in this library",
                                     field_lines.get("name")))
 
+    body_start_line = raw.replace("\r\n", "\n").count("\n", 0, body_start) + 2 if body_start != -1 else 1
+    findings.extend(lint_v04(
+        label, raw, extras.get("raw") or "", body, desc, name, fm,
+        _iter_extra(path), field_lines, body_start_line,
+    ))
     return findings
 
 
@@ -694,9 +1011,25 @@ def to_sarif(findings: list[Finding], root: str) -> dict:
     }
 
 
+def emit_gha(findings: list[Finding]) -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    sev = {ERROR: "error", WARN: "warning", INFO: "notice"}
+    for f in findings:
+        msg = f.message.replace("%", "%25").replace("\n", " ")
+        print(f"::{sev[f.level]} file={f.skill},line={f.line or 1}::{msg} [{f.code}]", file=sys.stderr)
+
+
+def _ignored(raw: list[str]) -> set[str]:
+    out: set[str] = set()
+    for item in raw:
+        out.update(c.strip() for c in item.split(",") if c.strip())
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Audit a Claude Code / Agent Skills directory.")
-    ap.add_argument("path", nargs="?", default=os.path.expanduser("~/.claude/skills"),
+    ap.add_argument("path", nargs="?", default=None,
                     help="skills directory (default: ~/.claude/skills)")
     ap.add_argument("--json", action="store_true", help="emit JSON")
     ap.add_argument("--sarif", metavar="FILE", help="write SARIF 2.1.0 to FILE")
@@ -712,46 +1045,65 @@ def main(argv: list[str] | None = None) -> int:
                     help="exit 1 on warnings as well as errors")
     ap.add_argument("--fix", action="store_true",
                     help="apply safe auto-fixes in place")
+    ap.add_argument("--stdin", action="store_true",
+                    help="lint SKILL.md text from stdin (path is the label)")
+    ap.add_argument("--min-score", type=int, metavar="N",
+                    help="exit 1 if any skill scores below N (0-100)")
+    ap.add_argument("--ignore", action="append", default=[], metavar="CODE",
+                    help="skip these finding codes (comma-separated or repeatable)")
+    ap.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                    help="skip skill paths matching this glob (repeatable)")
     ap.add_argument("--version", action="version", version=f"claude-skill-lint {__version__}")
     args = ap.parse_args(argv)
-
-    root = os.path.abspath(os.path.expanduser(args.path))
-    if not os.path.isdir(root):
-        print(f"error: not a directory: {root}", file=sys.stderr)
-        return 2
-
-    stale_res = [re.compile(p) for p in STALE_MODEL_PATTERNS]
+    ignore = _ignored(args.ignore)
+    exclude = args.exclude
     allowed = set(args.allow_model)
+    stale_res = [re.compile(p) for p in STALE_MODEL_PATTERNS]
 
-    skills = find_skill_files(root)
-    names: list[str] = []
-    for s in skills:
+    def keep(found: list[Finding]) -> list[Finding]:
+        out = found
+        if allowed:
+            out = [f for f in out if not (
+                f.code == "stale-model-id" and any(a in f.message for a in allowed)
+            )]
+        if ignore:
+            out = [f for f in out if f.code not in ignore]
+        return out
+
+    if args.stdin:
+        text = sys.stdin.read()
+        folder = expected_name(args.path) if args.path else "stdin"
+        if not folder:
+            folder = "stdin"
+        td = tempfile.mkdtemp(prefix="skilllint-")
         try:
-            text = open(s, encoding="utf-8").read()
-        except (OSError, UnicodeDecodeError):
-            names.append("")
-            continue
-        fm, *_rest = parse_frontmatter(text)
-        names.append(str((fm or {}).get("name", "") or "").strip())
-
-    if args.fix:
-        for s in skills:
-            found = lint_skill(s, root, args.max_desc, args.max_body, stale_res, args.profile, names)
-            ids = []
-            for f in found:
-                fid = FIX_FOR.get(f.code)
-                if fid and fid not in ids:
-                    ids.append(fid)
-            if not ids:
-                continue
-            original = open(s, encoding="utf-8").read()
-            next_t = original
-            for fid in ids:
-                next_t = apply_fix(next_t, fid, s)
-            if next_t != original:
-                open(s, "w", encoding="utf-8", newline="\n").write(next_t)
-
-        names = []
+            sdir = os.path.join(td, folder)
+            os.makedirs(sdir)
+            virt = os.path.join(sdir, "SKILL.md")
+            with open(virt, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            found = keep(lint_skill(virt, td, args.max_desc, args.max_body, stale_res, args.profile, [folder]))
+            all_findings = found
+            skills_n = 1
+            root = args.path or "stdin"
+            per_skill = {folder: found}
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+    else:
+        root = os.path.abspath(os.path.expanduser(args.path or os.path.expanduser("~/.claude/skills")))
+        if not os.path.isdir(root):
+            print(f"error: not a directory: {root}", file=sys.stderr)
+            return 2
+        skills = find_skill_files(root)
+        if exclude:
+            filtered = []
+            for s in skills:
+                rel = _norm(os.path.relpath(s, root))
+                if any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(os.path.basename(rel), g) for g in exclude):
+                    continue
+                filtered.append(s)
+            skills = filtered
+        names: list[str] = []
         for s in skills:
             try:
                 text = open(s, encoding="utf-8").read()
@@ -761,22 +1113,52 @@ def main(argv: list[str] | None = None) -> int:
             fm, *_rest = parse_frontmatter(text)
             names.append(str((fm or {}).get("name", "") or "").strip())
 
-    all_findings: list[Finding] = []
-    for s in skills:
-        found = lint_skill(s, root, args.max_desc, args.max_body, stale_res, args.profile, names)
-        if allowed:
-            found = [f for f in found if not (
-                f.code == "stale-model-id" and any(a in f.message for a in allowed)
-            )]
-        all_findings.extend(found)
+        if args.fix:
+            for s in skills:
+                found = lint_skill(s, root, args.max_desc, args.max_body, stale_res, args.profile, names)
+                ids = []
+                for f in found:
+                    fid = FIX_FOR.get(f.code)
+                    if fid and fid not in ids:
+                        ids.append(fid)
+                if not ids:
+                    continue
+                original = open(s, encoding="utf-8").read()
+                next_t = original
+                for fid in ids:
+                    next_t = apply_fix(next_t, fid, s)
+                if next_t != original:
+                    open(s, "w", encoding="utf-8", newline="\n").write(next_t)
+
+            names = []
+            for s in skills:
+                try:
+                    text = open(s, encoding="utf-8").read()
+                except (OSError, UnicodeDecodeError):
+                    names.append("")
+                    continue
+                fm, *_rest = parse_frontmatter(text)
+                names.append(str((fm or {}).get("name", "") or "").strip())
+
+        all_findings = []
+        per_skill: dict[str, list[Finding]] = {}
+        for s in skills:
+            found = keep(lint_skill(s, root, args.max_desc, args.max_body, stale_res, args.profile, names))
+            all_findings.extend(found)
+            per_skill[skill_label(s, root)] = found
+        skills_n = len(skills)
 
     errors = sum(1 for f in all_findings if f.level == ERROR)
     warns = sum(1 for f in all_findings if f.level == WARN)
     infos = sum(1 for f in all_findings if f.level == INFO)
+    scores = {k: score_of(v) for k, v in per_skill.items()}
+    worst = min(scores.values()) if scores else 100
+
+    emit_gha(all_findings)
 
     if args.sarif:
         with open(args.sarif, "w", encoding="utf-8") as fh:
-            json.dump(to_sarif(all_findings, root), fh, indent=2)
+            json.dump(to_sarif(all_findings, str(root)), fh, indent=2)
             fh.write("\n")
 
     if args.json:
@@ -784,7 +1166,9 @@ def main(argv: list[str] | None = None) -> int:
             "root": root,
             "profile": args.profile,
             "version": __version__,
-            "skills_scanned": len(skills),
+            "skills_scanned": skills_n,
+            "score": worst,
+            "scores": scores,
             "summary": {"errors": errors, "warnings": warns, "info": infos},
             "findings": [f.as_dict() for f in all_findings],
         }, indent=2))
@@ -794,13 +1178,15 @@ def main(argv: list[str] | None = None) -> int:
         for f in shown:
             loc = f"L{f.line} " if f.line else ""
             print(f"  {icon[f.level]} [{f.level:5}] {f.skill}: {loc}{f.message}  ({f.code})")
-        clean = len(skills) - len({f.skill for f in all_findings})
-        print(f"\nScanned {len(skills)} skills in {root}")
-        print(f"  {clean} clean · {errors} errors · {warns} warnings · {infos} info")
+        clean = skills_n - len({f.skill for f in all_findings})
+        print(f"\nScanned {skills_n} skills in {root}")
+        print(f"  {clean} clean · {errors} errors · {warns} warnings · {infos} info · score {worst}")
 
     if errors:
         return 1
     if args.fail_on_warn and warns:
+        return 1
+    if args.min_score is not None and worst < args.min_score:
         return 1
     return 0
 
