@@ -21,6 +21,10 @@ inputs:
     description: Hide INFO findings
     required: false
     default: "true"
+  sarif:
+    description: Write SARIF 2.1.0 to this path (empty to skip)
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -34,6 +38,7 @@ runs:
         SKILL_LINT_PROFILE: ${{ inputs.profile }}
         SKILL_LINT_QUIET: ${{ inputs.quiet }}
         SKILL_LINT_FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
+        SKILL_LINT_SARIF: ${{ inputs.sarif }}
       run: |
         set -euo pipefail
         args=(--profile "$SKILL_LINT_PROFILE")
@@ -42,5 +47,8 @@ runs:
         fi
         if [ "$SKILL_LINT_FAIL_ON_WARN" = "true" ]; then
           args+=(--fail-on-warn)
+        fi
+        if [ -n "$SKILL_LINT_SARIF" ]; then
+          args+=(--sarif "$SKILL_LINT_SARIF")
         fi
         python3 "${GITHUB_ACTION_PATH}/skill_lint.py" "$SKILL_LINT_PATH" "${args[@]}"

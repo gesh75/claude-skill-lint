@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./install.sh                 # install the latest release to ~/.local/bin
-#   VERSION=v0.1.0 ./install.sh  # pin a specific release tag (or "main")
+#   VERSION=v0.3.0 ./install.sh  # pin a specific release tag (or "main")
 #   BIN_DIR=/usr/local/bin ./install.sh
 #
 # It downloads a single file (skill_lint.py) from this repo — review it at

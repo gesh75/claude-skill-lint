@@ -13,7 +13,7 @@ use progressive disclosure, dead `references/` links, secrets, and outdated mode
 ```console
 $ skill_lint.py ~/.claude/skills
   ! [WARN ] api-design: L3 description is 364 chars (> 350); it's loaded every turn — tighten it  (long-description)
-  ✗ [ERROR] token-budget-advisor: L12 link points to a missing file: ../context-budget/SKILL.md  (dead-reference)
+  ✗ [ERROR] token-budget-advisor: L12 path leaves the skill directory: ../context-budget/SKILL.md  (path-escape)
 
 Scanned 124 skills in /Users/me/.claude/skills
   122 clean · 1 errors · 1 warnings · 0 info
@@ -28,10 +28,11 @@ A Claude Code skill has two cost surfaces:
 - its **body** is loaded only when the skill fires — so large bodies should push
   detail into `references/*.md` (progressive disclosure) instead of sitting inline.
 
-v0.2 also encodes the agentskills.io hard limits (name format, 1024-char
+v0.3 also encodes the agentskills.io hard limits (name format, 1024-char
 description, 500-char compatibility), Claude.ai rejection rules (reserved words,
-angle brackets), and the safety checks (secrets, `curl | bash`) the original
-nine-rule engine never ran.
+angle brackets), safety checks (secrets, `curl | bash`, path escape,
+prompt-injection phrasing), and Claude Code field types (`context: fork`,
+booleans, hooks). The original nine-rule engine never ran any of these.
 
 ## Install
 
@@ -56,21 +57,24 @@ chmod +x skill_lint.py
 ## Usage
 
 ```bash
-skill_lint.py [PATH] [--json] [--max-desc N] [--max-body N] [--quiet]
-              [--profile claude-code|spec|claude-ai]
-              [--allow-model ID] [--fail-on-warn]
+skill_lint.py [PATH] [--json] [--sarif FILE] [--max-desc N] [--max-body N]
+              [--quiet] [--profile claude-code|spec|claude-ai]
+              [--allow-model ID] [--fail-on-warn] [--fix] [--version]
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `PATH` | `~/.claude/skills` | directory to scan |
 | `--json` | off | machine-readable output (includes `line`) |
+| `--sarif FILE` | off | write SARIF 2.1.0 (GitHub code scanning) |
 | `--max-desc` | `350` | max description length (chars) before a warning |
 | `--max-body` | `400` | max body length (lines) before a warning |
 | `--quiet` | off | hide INFO findings |
 | `--profile` | `claude-code` | `claude-code` (CC extensions are info), `spec` (strict), `claude-ai` (reserved words + XML) |
 | `--allow-model` | none | do not flag this model id as stale (repeatable) |
 | `--fail-on-warn` | off | exit 1 on warnings as well as errors |
+| `--fix` | off | apply safe auto-fixes in place (BOM, LF, name, trigger language, model ids) |
+| `--version` | | print `claude-skill-lint 0.3.0` |
 
 Exit code is **non-zero when any ERROR-level finding exists**, so it drops
 straight into CI or a pre-commit hook. `--fail-on-warn` also fails on warnings.
@@ -118,6 +122,16 @@ material and are deliberately **not** linted as skills.
 | `bom-present` | INFO | UTF-8 BOM (v0.1 reported this as `no-frontmatter`) | v0.2 |
 | `filename-casing` | WARN | file is `skill.md`, not `SKILL.md` | v0.2 |
 | `todo-left` | INFO | `TODO` / `FIXME` / `XXX` in the body | v0.2 |
+| `path-escape` | ERROR | local path uses `..` and leaves the skill | v0.3 |
+| `duplicate-key` | WARN | same frontmatter key declared twice | v0.3 |
+| `invalid-boolean` | WARN | `user-invocable` / `disable-model-invocation` / `background` not true/false | v0.3 |
+| `invalid-enum` | WARN | `context` not `fork`, `effort` not low\|medium\|high\|xhigh\|max | v0.3 |
+| `hooks-format` | WARN | `hooks` is not a YAML mapping | v0.3 |
+| `prompt-injection` | WARN | "ignore previous instructions" / jailbreak phrasing in the body | v0.3 |
+| `unreferenced-script` | WARN | a file in `scripts/` is never mentioned | v0.3 |
+| `license-missing` | WARN | `license` points at a file that is not in the skill | v0.3 |
+| `no-heading` / `h1-mismatch` | INFO | body has no heading, or H1 does not match `name` | v0.3 |
+| `crlf-newlines` | INFO | Windows `CRLF` line endings | v0.3 |
 
 \* `name-mismatch` is a warning on `--profile claude-code` and an error on `spec` / `claude-ai`.
 
@@ -140,6 +154,11 @@ jobs:
         with:
           path: skills
           profile: claude-code
+          sarif: skill-lint.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: skill-lint.sarif
 ```
 
 ## CI (this repo)
