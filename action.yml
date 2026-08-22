@@ -1,0 +1,46 @@
+name: claude-skill-lint
+description: Lint Agent Skills (SKILL.md) for Claude Code, Claude.ai, and agentskills.io
+author: gesh75
+branding:
+  icon: search
+  color: gray-dark
+inputs:
+  path:
+    description: Directory of skills to scan
+    required: false
+    default: "."
+  profile:
+    description: "Rule profile: claude-code, spec, or claude-ai"
+    required: false
+    default: "claude-code"
+  fail-on-warn:
+    description: Fail the job on warnings as well as errors
+    required: false
+    default: "false"
+  quiet:
+    description: Hide INFO findings
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+    - name: Lint skills
+      shell: bash
+      env:
+        SKILL_LINT_PATH: ${{ inputs.path }}
+        SKILL_LINT_PROFILE: ${{ inputs.profile }}
+        SKILL_LINT_QUIET: ${{ inputs.quiet }}
+        SKILL_LINT_FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
+      run: |
+        set -euo pipefail
+        args=(--profile "$SKILL_LINT_PROFILE")
+        if [ "$SKILL_LINT_QUIET" = "true" ]; then
+          args+=(--quiet)
+        fi
+        if [ "$SKILL_LINT_FAIL_ON_WARN" = "true" ]; then
+          args+=(--fail-on-warn)
+        fi
+        python3 "${GITHUB_ACTION_PATH}/skill_lint.py" "$SKILL_LINT_PATH" "${args[@]}"
