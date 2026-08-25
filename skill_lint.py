@@ -13,8 +13,8 @@ Usage:
                   [--allow-model ID] [--fail-on-warn] [--fix] [--version]
                   [--stdin] [--min-score N] [--ignore CODE] [--exclude GLOB]
 
-Exit code is non-zero if any ERROR-level findings exist (or WARN when
-``--fail-on-warn`` is set).
+Exit codes: 0 clean; 1 findings (ERROR, or WARN with ``--fail-on-warn``,
+or ``--min-score`` miss); 2 no directory / no skills found (fail closed).
 """
 from __future__ import annotations
 
@@ -178,6 +178,10 @@ def find_skill_files(root: str) -> list[str]:
             d for d in dirnames
             if d not in SKIP_DIRS and (not d.startswith(".") or d in KEEP_DOT_DIRS)
         ]
+        # .claude also holds settings, transcripts, and projects — only
+        # the project-skill tree is in scope when scanning from a repo root.
+        if os.path.basename(dirpath) == ".claude":
+            dirnames[:] = [d for d in dirnames if d == "skills"]
         if dirpath == root:
             continue
         for name in filenames:

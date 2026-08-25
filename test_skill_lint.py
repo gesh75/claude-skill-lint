@@ -385,6 +385,26 @@ def test_finds_project_claude_skills():
         assert "reverse-shell" in codes
 
 
+def test_skips_other_hidden_dirs_and_claude_projects():
+    """Opening .claude must not walk transcripts/projects or other dot-dirs."""
+    with tempfile.TemporaryDirectory() as d:
+        _write(
+            os.path.join(d, ".claude", "skills", "keep", "SKILL.md"),
+            GOLD.replace("name: good", "name: keep").replace("# Good", "# Keep"),
+        )
+        _write(
+            os.path.join(d, ".claude", "projects", "session", "SKILL.md"),
+            "---\nname: leaked\ndescription: Must not be discovered from a repo-root scan of .claude.\n---\n# Leaked\n",
+        )
+        _write(
+            os.path.join(d, ".hidden", "skills", "evil", "SKILL.md"),
+            "---\nname: hidden\ndescription: Hidden-dir skills outside .claude must stay skipped.\n---\n# Hidden\n",
+        )
+        found = sl.find_skill_files(d)
+        assert len(found) == 1, found
+        assert found[0].endswith(os.path.join(".claude", "skills", "keep", "SKILL.md"))
+
+
 def test_exclude_glob():
     with tempfile.TemporaryDirectory() as d:
         _write(os.path.join(d, "keep", "SKILL.md"), GOLD.replace("name: good", "name: keep").replace("# Good", "# Keep"))
