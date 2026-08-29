@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""claude-skill-lint v0.4 — audit a Claude Code / Agent Skills directory.
+"""claude-skill-lint v0.5 — audit a Claude Code / Agent Skills directory.
 
 Zero-dependency linter for ~/.claude/skills (or any directory of skills).
 
@@ -27,7 +27,7 @@ import shutil
 import sys
 import tempfile
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 DEFAULT_MAX_DESC = 350
 DEFAULT_MAX_BODY = 400
@@ -62,7 +62,7 @@ CC_FIELDS = {
 CC_BOOL_FIELDS = ("user-invocable", "disable-model-invocation", "background")
 CC_EFFORT = {"low", "medium", "high", "xhigh", "max"}
 CC_CONTEXT = {"fork"}
-CC_MODEL_ALIASES = {"inherit", "haiku", "sonnet", "opus", "best"}
+CC_MODEL_ALIASES = {"inherit", "haiku", "sonnet", "opus", "fable", "mythos", "best"}
 
 NAME_RE = re.compile(r"^(?!-)(?!.*--)[0-9a-z]+(?:-[0-9a-z]+)*$")
 TRIGGER_RE = re.compile(
@@ -563,6 +563,50 @@ def lint_v04(
     return out
 
 
+def lint_v05(
+    label: str,
+    source: str,
+    body: str,
+    name: str,
+    fm: dict,
+    field_lines: dict[str, int],
+    body_start_line: int,
+) -> list[Finding]:
+    """2026 rules: computer-use + unscoped Bash, stale beta header, plugin colon names."""
+    out: list[Finding] = []
+
+    def add(level: str, code: str, message: str, line: int | None = None) -> None:
+        out.append(Finding(label, level, code, message, line))
+
+    tools = _as_str(fm.get("allowed-tools", "") or "")
+    unscoped = bool(re.search(r"(?:^|\s)Bash(?:\s|$)", tools) and not re.search(r"(?:^|\s)Bash\(", tools))
+    computer = bool(re.search(r"computer_toolset_20260801|computer[_ ]use|computer_toolset", source, re.I))
+    if computer and unscoped:
+        add(
+            WARN,
+            "computer-unscoped",
+            "computer use paired with unscoped Bash — never give a jump host both",
+            field_lines.get("allowed-tools") or body_start_line,
+        )
+    if re.search(r"skills-2025-10-02.{0,80}(required|needed|must)", source, re.I) or re.search(
+        r"(requires?|needs?|must use).{0,40}skills-2025-10-02", source, re.I
+    ):
+        add(
+            INFO,
+            "beta-header-stale",
+            "Agent Skills are out of beta — skills-2025-10-02 is no longer required",
+            body_start_line,
+        )
+    if name and ":" in name:
+        add(
+            WARN,
+            "plugin-colon-name",
+            "name contains ':' — plugin skills namespace as /plugin:name at invoke time, not in name:",
+            field_lines.get("name"),
+        )
+    return out
+
+
 def _line_of(text: str, idx: int) -> int:
     return text.count("\n", 0, idx) + 1
 
@@ -837,7 +881,7 @@ def lint_skill(
         m = rx.search(raw)
         if m:
             findings.append(Finding(label, WARN, "stale-model-id",
-                                    f"possible outdated model id: '{m.group(0)}'",
+                                    f"outdated Claude model id '{m.group(0)}' — current: Opus 5 / 4.8, Sonnet 5 / 4.6, Haiku 4.5, Fable 5, Mythos 5",
                                     _line_of(raw, m.start())))
             break
 
@@ -883,6 +927,7 @@ def lint_skill(
         label, raw, extras.get("raw") or "", body, desc, name, fm,
         _iter_extra(path), field_lines, body_start_line,
     ))
+    findings.extend(lint_v05(label, raw, body, name, fm, field_lines, body_start_line))
     return findings
 
 
@@ -972,12 +1017,12 @@ def apply_fix(text: str, fix_id: str, path: str) -> str:
         return re.sub(r"((?:scripts|references|reference|assets|rules)\\[A-Za-z0-9_\\.-]+)",
                       lambda m: m.group(0).replace("\\", "/"), text)
     if fix_id == "refresh-model":
-        t = re.sub(r"claude-3(?:-[\w.]+)*", "claude-sonnet-4-6", text, flags=re.I)
-        t = re.sub(r"claude-opus-4-[0-7]\b", "claude-opus-4-8", t, flags=re.I)
-        t = re.sub(r"claude-sonnet-4-[0-5]\b", "claude-sonnet-4-6", t, flags=re.I)
+        t = re.sub(r"claude-3(?:-[\w.]+)*", "claude-sonnet-5", text, flags=re.I)
+        t = re.sub(r"claude-opus-4-[0-7]\b", "claude-opus-5", t, flags=re.I)
+        t = re.sub(r"claude-sonnet-4-[0-5]\b", "claude-sonnet-5", t, flags=re.I)
         t = re.sub(r"claude-haiku-4-[0-4]\b", "claude-haiku-4-5", t, flags=re.I)
-        t = re.sub(r"claude-4-opus", "claude-opus-4-8", t, flags=re.I)
-        t = re.sub(r"claude-4-sonnet", "claude-sonnet-4-6", t, flags=re.I)
+        t = re.sub(r"claude-4-opus", "claude-opus-5", t, flags=re.I)
+        t = re.sub(r"claude-4-sonnet", "claude-sonnet-5", t, flags=re.I)
         t = re.sub(r"claude-4-haiku", "claude-haiku-4-5", t, flags=re.I)
         return t
     return text

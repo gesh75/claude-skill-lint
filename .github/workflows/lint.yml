@@ -19,3 +19,5 @@ jobs:
         run: python3 test_skill_lint.py
       - name: Self-lint clean fixtures
         run: python3 skill_lint.py tests/fixtures/clean --quiet
+      - name: Lint NetOps pack
+        run: python3 skill_lint.py skills/netops --quiet
