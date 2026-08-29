@@ -1,6 +1,8 @@
 # claude-skill-lint
 
 [![ci](https://github.com/gesh75/claude-skill-lint/actions/workflows/lint.yml/badge.svg)](https://github.com/gesh75/claude-skill-lint/actions/workflows/lint.yml)
+[![docs](https://img.shields.io/badge/docs-gesh75.github.io-e4e4e7?labelColor=09090b)](https://gesh75.github.io/claude-skill-lint/)
+[![release](https://img.shields.io/github/v/release/gesh75/claude-skill-lint)](https://github.com/gesh75/claude-skill-lint/releases/tag/v0.5.0)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![python: 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 
@@ -9,6 +11,8 @@ Point it at your `~/.claude/skills` directory and it flags the things that quiet
 degrade a skills library: broken frontmatter, descriptions that are too long
 (they're loaded into context on *every* turn), bloated skill bodies that should
 use progressive disclosure, dead `references/` links, secrets, and outdated model IDs.
+
+**Docs:** [gesh75.github.io/claude-skill-lint](https://gesh75.github.io/claude-skill-lint/) · **Release:** [v0.5.0](https://github.com/gesh75/claude-skill-lint/releases/tag/v0.5.0)
 
 ```console
 $ skill_lint.py ~/.claude/skills
@@ -255,6 +259,13 @@ has a do-not-use boundary, numbered steps, and a verify loop. Copy one into
 ```bash
 cp -R skills/netops/netops-change-guard ~/.claude/skills/
 ```
+
+## Docs
+
+- Project page: [gesh75.github.io/claude-skill-lint](https://gesh75.github.io/claude-skill-lint/)
+- GESH Lab hub: [gesh75.github.io](https://gesh75.github.io/)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
+- NetOps pack: [skills/README.md](skills/README.md)
 
 ## License
 
