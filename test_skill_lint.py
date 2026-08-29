@@ -126,7 +126,7 @@ def test_current_model_id_not_flagged():
     res_pat = [re.compile(p) for p in sl.STALE_MODEL_PATTERNS]
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "x.md")
-        _write(path, "---\nname: x\ndescription: ok description here for triggering reliably. Use when testing.\n---\nuse claude-opus-4-8 and claude-sonnet-4-6 and claude-haiku-4-5\n")
+        _write(path, "---\nname: x\ndescription: ok description here for triggering reliably. Use when testing.\n---\nuse claude-opus-5 and claude-sonnet-5 and claude-fable-5 and claude-mythos-5 and claude-opus-4-8 and claude-sonnet-4-6 and claude-haiku-4-5\n")
         res = sl.lint_skill(path, d, sl.DEFAULT_MAX_DESC, sl.DEFAULT_MAX_BODY, res_pat, "claude-code")
         assert "stale-model-id" not in _codes(res)
 
@@ -229,7 +229,7 @@ def test_sarif_and_version():
         assert rc == 0
         data = __import__("json").loads(open(out, encoding="utf-8").read())
         assert data["version"] == "2.1.0"
-        assert sl.__version__ == "0.4.0"
+        assert sl.__version__ == "0.5.0"
 
 
 GOLD = (
@@ -318,7 +318,7 @@ def test_stdin_json():
     finally:
         sys.stdin, sys.stdout = old_in, old_out
     assert rc == 0
-    assert data["version"] == "0.4.0"
+    assert data["version"] == "0.5.0"
     assert data["score"] == 100
     assert data["findings"] == []
 
@@ -360,6 +360,22 @@ def test_exclude_glob():
         data = __import__("json").loads(buf.getvalue())
         assert rc == 0
         assert data["skills_scanned"] == 1
+
+
+def test_v05_computer_unscoped_and_beta_header():
+    with tempfile.TemporaryDirectory() as d:
+        res = _lint(
+            d,
+            "x.md",
+            "---\nname: x\ndescription: ok description here for triggering reliably. Use when testing. Do not use for prod.\n"
+            "allowed-tools: Bash\n---\n"
+            "# X\n\nRequires the skills-2025-10-02 beta header.\n"
+            "Pair computer_toolset_20260801 with a shell.\n",
+        )
+        codes = _codes(res)
+        assert "computer-unscoped" in codes
+        assert "beta-header-stale" in codes
+        assert "unscoped-bash" in codes
 
 
 def test_clean_fixture_dir():

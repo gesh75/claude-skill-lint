@@ -28,12 +28,15 @@ A Claude Code skill has two cost surfaces:
 - its **body** is loaded only when the skill fires — so large bodies should push
   detail into `references/*.md` (progressive disclosure) instead of sitting inline.
 
-v0.4 also encodes the authoring guides (Anthropic, Codex 60-char frontload,
-Antigravity do-not-use + Safety heading), Claude Code 2026 fields
-(`when_to_use` listing cap at 1536, `argument-hint`, reserved slash commands),
-and a second safety pass (TLS verification off, reverse shells, unpinned
-installs, bundled `.env` / `id_rsa`). The original nine-rule engine never ran
-any of these.
+v0.5 also encodes the 2026 model lineup (Opus 5, Sonnet 5, Fable 5, Mythos 5 —
+Opus 4.8 / Sonnet 4.6 / Haiku 4.5 stay current), GitHub-mounted `.claude/skills`,
+computer-use + unscoped Bash as a fail-closed pair, and a 22-skill NetOps pack
+under `skills/netops/`. v0.4 encoded the authoring guides (Anthropic, Codex
+60-char frontload, Antigravity do-not-use + Safety heading), Claude Code 2026
+fields (`when_to_use` listing cap at 1536, `argument-hint`, reserved slash
+commands), and a second safety pass (TLS verification off, reverse shells,
+unpinned installs, bundled `.env` / `id_rsa`). The original nine-rule engine
+never ran any of these.
 
 ## Install
 
@@ -80,7 +83,7 @@ skill_lint.py [PATH] [--json] [--sarif FILE] [--max-desc N] [--max-body N]
 | `--min-score` | none | exit 1 if any skill scores below N (0–100; errors 16, warns 6, infos 1) |
 | `--ignore CODE` | none | skip these finding codes (comma-separated or repeatable) |
 | `--exclude GLOB` | none | skip skill paths matching this glob (repeatable) |
-| `--version` | | print `claude-skill-lint 0.4.0` |
+| `--version` | | print `claude-skill-lint 0.5.0` |
 
 Exit code is **non-zero when any ERROR-level finding exists**, so it drops
 straight into CI or a pre-commit hook. `--fail-on-warn` also fails on warnings.
@@ -196,15 +199,20 @@ material and are deliberately **not** linted as skills.
 | `fork-no-agent` | INFO | `context: fork` with no `agent:` | v0.4 |
 | `placeholder-text` | INFO | `YOUR_API_KEY`, `lorem ipsum`, `replace-me` | v0.4 |
 | `no-safety-section` | INFO | `scripts/` present but no Safety/Caution heading | v0.4 |
+| `computer-unscoped` | WARN | computer use / `computer_toolset` paired with unscoped Bash | v0.5 |
+| `beta-header-stale` | INFO | `skills-2025-10-02` treated as still required — Agent Skills are out of beta | v0.5 |
+| `plugin-colon-name` | WARN | `name` contains a colon; plugin namespace is `/plugin:name` at invoke time | v0.5 |
 
 \* `name-mismatch` is a warning on `--profile claude-code` and an error on `spec` / `claude-ai`.
 
 v0.4 also scans GitLab PATs (`glpat-`), JWTs, SendGrid keys, and Discord webhooks
 as `secret-leak`.
 
-Current model ids — Opus 4.8 (`claude-opus-4-8`), Sonnet 4.6 (`claude-sonnet-4-6`),
-Haiku 4.5 (`claude-haiku-4-5`) — are not flagged. Override leftovers with
-`--allow-model`.
+Current model ids — Opus 5 (`claude-opus-5`), Opus 4.8 (`claude-opus-4-8`),
+Sonnet 5 (`claude-sonnet-5`), Sonnet 4.6 (`claude-sonnet-4-6`),
+Haiku 4.5 (`claude-haiku-4-5`), Fable 5 (`claude-fable-5`),
+Mythos 5 (`claude-mythos-5`) — are not flagged. Override leftovers with
+`--allow-model`. `--fix` rewrites Claude 3.x ids to `claude-sonnet-5`.
 
 ## GitHub Action
 
@@ -217,7 +225,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: gesh75/claude-skill-lint@v0.2.0
+      - uses: gesh75/claude-skill-lint@v0.5.0
         with:
           path: skills
           profile: claude-code
@@ -233,6 +241,19 @@ jobs:
 ```yaml
 - run: python3 test_skill_lint.py
 - run: python3 skill_lint.py tests/fixtures/clean --quiet
+- run: python3 skill_lint.py skills/netops --quiet
+```
+
+## NetOps pack
+
+22 production skills for SD-WAN, SASE, EVPN Clos, CAB cadence, NetBox, hybrid
+interconnect, and MCP safety live in [`skills/netops/`](skills/netops). Each file
+has a do-not-use boundary, numbered steps, and a verify loop. Copy one into
+`~/.claude/skills/<name>/SKILL.md` or mount the repo so Claude Code discovers
+`.claude/skills` at the root.
+
+```bash
+cp -R skills/netops/netops-change-guard ~/.claude/skills/
 ```
 
 ## License
