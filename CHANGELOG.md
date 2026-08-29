@@ -8,6 +8,7 @@
 - New checks: `computer-unscoped`, `beta-header-stale`, `plugin-colon-name`.
 - 22-skill NetOps pack under `skills/netops/` (SD-WAN, SASE, EVPN, CAB, NetBox, MCP safety).
 - GitHub Action example pin `@v0.5.0`.
+- Docs: https://gesh75.github.io/claude-skill-lint/
 
 ## 0.4.0 — 2026-08-23
 
