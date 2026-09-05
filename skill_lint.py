@@ -13,8 +13,8 @@ Usage:
                   [--allow-model ID] [--fail-on-warn] [--fix] [--version]
                   [--stdin] [--min-score N] [--ignore CODE] [--exclude GLOB]
 
-Exit code is non-zero if any ERROR-level findings exist (or WARN when
-``--fail-on-warn`` is set).
+Exit codes: 0 clean; 1 findings (ERROR, or WARN with ``--fail-on-warn``,
+or ``--min-score`` miss); 2 no directory / no skills found (fail closed).
 """
 from __future__ import annotations
 
@@ -40,6 +40,9 @@ SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", ".tox",
     "dist", "build", ".hg", ".svn", ".idea", ".vscode",
 }
+# Project-scoped Claude Code skills live here. Hidden-dir pruning must not
+# skip it or `skill_lint.py .` / the GHA default path="." scans nothing.
+KEEP_DOT_DIRS = {".claude"}
 
 STALE_MODEL_PATTERNS = [
     r"claude-3[\w.-]*",
@@ -171,7 +174,14 @@ def find_skill_files(root: str) -> list[str]:
         if os.path.isfile(full) and entry.endswith(".md") and entry not in skip:
             skills.append(full)
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in SKIP_DIRS and (not d.startswith(".") or d in KEEP_DOT_DIRS)
+        ]
+        # .claude also holds settings, transcripts, and projects — only
+        # the project-skill tree is in scope when scanning from a repo root.
+        if os.path.basename(dirpath) == ".claude":
+            dirnames[:] = [d for d in dirnames if d == "skills"]
         if dirpath == root:
             continue
         for name in filenames:
@@ -1197,7 +1207,12 @@ def main(argv: list[str] | None = None) -> int:
     warns = sum(1 for f in all_findings if f.level == WARN)
     infos = sum(1 for f in all_findings if f.level == INFO)
     scores = {k: score_of(v) for k, v in per_skill.items()}
-    worst = min(scores.values()) if scores else 100
+    # Fail closed: an empty scan used to report score 100 and exit 0, so
+    # --min-score and CI treated "scanned nothing" as a clean pass.
+    if skills_n == 0:
+        worst = 0
+    else:
+        worst = min(scores.values())
 
     emit_gha(all_findings)
 
@@ -1227,6 +1242,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nScanned {skills_n} skills in {root}")
         print(f"  {clean} clean · {errors} errors · {warns} warnings · {infos} info · score {worst}")
 
+    if skills_n == 0:
+        print(f"error: no skills found in {root}", file=sys.stderr)
+        return 2
     if errors:
         return 1
     if args.fail_on_warn and warns:
