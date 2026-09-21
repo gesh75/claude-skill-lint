@@ -6,7 +6,7 @@ branding:
   color: gray-dark
 inputs:
   path:
-    description: Directory of skills to scan
+    description: Directory of skills to scan (walks .claude/skills; exits 2 if none found)
     required: false
     default: "."
   profile:

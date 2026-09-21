@@ -89,11 +89,20 @@ skill_lint.py [PATH] [--json] [--sarif FILE] [--max-desc N] [--max-body N]
 | `--exclude GLOB` | none | skip skill paths matching this glob (repeatable) |
 | `--version` | | print `claude-skill-lint 0.5.0` |
 
-Exit code is **non-zero when any ERROR-level finding exists**, so it drops
-straight into CI or a pre-commit hook. `--fail-on-warn` also fails on warnings.
-`--min-score 80` fails the job if the worst skill scores below 80. Running
-inside GitHub Actions emits `::error` / `::warning` / `::notice` annotations
-on stderr automatically.
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Scan found skills and none failed the selected gate |
+| `1` | ERROR findings, `--fail-on-warn` warnings, or `--min-score` miss |
+| `2` | Path is not a directory, **or zero skills were found** |
+
+A directory with no skills used to report score 100 and exit 0, which made
+`--min-score` and CI go green without linting anything. Empty scans now
+print `error: no skills found` and exit 2. `--fail-on-warn` also fails on
+warnings. `--min-score 80` fails the job if the worst skill scores below 80.
+Running inside GitHub Actions emits `::error` / `::warning` / `::notice`
+annotations on stderr automatically.
 
 Pipe a single file:
 
@@ -107,6 +116,11 @@ Exactly two shapes — nothing else:
 
 - a top-level **`<name>.md`**, or
 - a **`<dir>/SKILL.md`**.
+
+Hidden directories are skipped, except **`.claude/skills/`** (the Claude Code
+project-skill location). A repo-root scan or the GitHub Action default
+`path: "."` therefore lints project skills. Other `.claude/` trees
+(`projects/`, transcripts, settings) are not walked.
 
 `references/`, `scripts/`, `assets/`, and sibling content files are supporting
 material and are deliberately **not** linted as skills.

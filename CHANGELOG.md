@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fail closed when a scan finds zero skills (exit 2, score 0) so `--min-score` and CI cannot go green on an empty walk.
+- Discover `.claude/skills/` from a repo-root / Action `path: "."` scan; other hidden directories stay skipped.
+
 ## 0.5.0 — 2026-08-29
 
 - Current model IDs: Opus 5, Sonnet 5, Fable 5, Mythos 5. Opus 4.8 / Sonnet 4.6 / Haiku 4.5 stay current.
