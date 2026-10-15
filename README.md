@@ -42,6 +42,23 @@ commands), and a second safety pass (TLS verification off, reverse shells,
 unpinned installs, bundled `.env` / `id_rsa`). The original nine-rule engine
 never ran any of these.
 
+## How it works
+
+```mermaid
+flowchart LR
+    A["PATH<br/>(~/.claude/skills)"] --> B["find_skill_files<br/>walk SKILL.md"]
+    B --> C["parse_frontmatter<br/>YAML keys, line map"]
+    C --> D["lint_skill<br/>+ lint_v04 / lint_v05 checks"]
+    D --> E["Findings<br/>ERROR · WARN · INFO"]
+    E --> F["score_of<br/>0–100 per skill"]
+    E -->|--fix| G["apply_fix<br/>safe rewrites"]
+    F --> H{"Output"}
+    H --> I["Console report"]
+    H --> J["--json"]
+    H --> K["--sarif FILE<br/>(SARIF 2.1.0)"]
+    H --> L["GitHub Action<br/>annotations"]
+```
+
 ## Install
 
 No dependencies beyond Python 3.8+.
